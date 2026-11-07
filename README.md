@@ -46,4 +46,4 @@ Open `http://localhost:8080`. Opening `index.html` as a file can block the reque
 
 A free Supabase project can pause after about a week with no database activity. Supabase emails you before that happens. Opening the project in the dashboard, or loading this page, counts as activity. If the menu ever fails to load around the meal, open the project and choose **Resume project**. The dishes are still there.
 
-To remove a dish, delete that row in the Supabase Table Editor. The page refreshes on its own every 20 seconds.
+A signed-in family member can edit or remove any dish on the page. Run `supabase/allow-edit.sql` once in the SQL Editor so those actions are allowed. The page refreshes on its own every 20 seconds.

@@ -44,6 +44,9 @@
   var currentSession = null;
   var refreshPromise = null;
   var pollingStarted = false;
+  var editingId = null;
+  var confirmingId = null;
+  var latestDishes = [];
   var SESSION_KEY = "potluck-session";
 
   applyCopy(settings.config);
@@ -61,6 +64,8 @@
   });
   refreshButton.addEventListener("click", function () {
     if (!currentSession) return;
+    editingId = null;
+    confirmingId = null;
     loadMenu({ quiet: menu.dataset.loaded === "true" });
   });
   signOutButton.addEventListener("click", function () {
@@ -231,17 +236,25 @@
       });
   }
 
-  function validate(fields) {
-    if (!fields.guest_name) return { message: "Add your name.", field: nameInput };
-    if (fields.guest_name.length > 80) return { message: "Use a shorter name (80 characters or fewer).", field: nameInput };
-    if (!fields.dish) return { message: "Add what you're bringing.", field: dishInput };
+  function validate(fields, inputs) {
+    var target = inputs || {
+      guest_name: nameInput,
+      dish: dishInput,
+      category: categoryInput,
+      notes: notesInput,
+    };
+    if (!fields.guest_name) return { message: "Add your name.", field: target.guest_name };
+    if (fields.guest_name.length > 80) {
+      return { message: "Use a shorter name (80 characters or fewer).", field: target.guest_name };
+    }
+    if (!fields.dish) return { message: "Add what you're bringing.", field: target.dish };
     if (fields.dish.length > 120) {
-      return { message: "Use a shorter dish name (120 characters or fewer).", field: dishInput };
+      return { message: "Use a shorter dish name (120 characters or fewer).", field: target.dish };
     }
     if (!fields.category || !categoryLabel(fields.category)) {
-      return { message: "Choose a category.", field: categoryInput };
+      return { message: "Choose a category.", field: target.category };
     }
-    if (fields.notes.length > 280) return { message: "Use a shorter note (280 characters or fewer).", field: notesInput };
+    if (fields.notes.length > 280) return { message: "Use a shorter note (280 characters or fewer).", field: target.notes };
     return null;
   }
 
@@ -271,6 +284,7 @@
     return fetchDishes()
       .then(function (dishes) {
         if (token !== loadToken) return;
+        if ((editingId || confirmingId) && opts.quiet) return;
         renderMenu(dishes, opts.highlightId);
         setNote(menuNote, "");
       })
@@ -313,6 +327,27 @@
       }).then(function (response) {
         if (!response.ok) return rejectResponse(response);
         return response.json();
+      });
+    });
+  }
+
+  function updateDish(id, fields) {
+    return changeDish("PATCH", id, fields);
+  }
+
+  function deleteDish(id) {
+    return changeDish("DELETE", id);
+  }
+
+  function changeDish(method, id, fields) {
+    return ensureSession().then(function () {
+      var options = { method: method, headers: apiHeaders({ Prefer: "return=minimal" }) };
+      if (fields) {
+        options.headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(fields);
+      }
+      return fetch(apiUrl("dishes?id=eq." + encodeURIComponent(id)), options).then(function (response) {
+        if (!response.ok) return rejectResponse(response);
       });
     });
   }
@@ -538,9 +573,14 @@
     } else if (status === 404 || /does not exist|schema cache|PGRST205/i.test(raw)) {
       message = "The dishes table is missing. Run supabase/schema.sql in the Supabase SQL editor.";
     } else if (/row-level security|permission denied|42501/i.test(raw)) {
-      message = "Supabase refused the request. Run supabase/enable-auth.sql in the SQL editor.";
+      message =
+        action === "load"
+          ? "Supabase refused the request. Run supabase/enable-auth.sql in the SQL editor."
+          : "Supabase refused the change. Run supabase/allow-edit.sql in the SQL editor.";
     } else if (/check constraint|dishes_/i.test(raw)) {
       message = "That entry didn't fit the menu limits. Shorten it and try again.";
+    } else if (action === "delete") {
+      message = "Couldn't remove that dish.";
     } else if (action === "save") {
       message = "Couldn't save that dish.";
     } else {
@@ -569,6 +609,7 @@
       })
     );
 
+    latestDishes = dishes.slice();
     summary.hidden = false;
     summary.textContent = summaryText(dishes);
     menu.replaceChildren();
@@ -603,6 +644,10 @@
     var card = document.createElement("article");
     card.className = "dish-card";
     if (highlightId && String(dish.id) === String(highlightId)) card.classList.add("is-new");
+    if (String(dish.id) === String(editingId)) {
+      card.appendChild(renderEditor(dish));
+      return card;
+    }
 
     var row = document.createElement("div");
     row.className = "dish-row";
@@ -631,7 +676,211 @@
       notes.textContent = clean(dish.notes);
       card.appendChild(notes);
     }
+
+    if (String(dish.id) === String(confirmingId)) {
+      card.appendChild(renderDeleteConfirm(dish));
+      return card;
+    }
+
+    var actions = document.createElement("div");
+    actions.className = "dish-actions";
+    var editButton = textButton("Edit");
+    editButton.setAttribute("aria-label", "Edit " + (dish.dish || "dish"));
+    editButton.addEventListener("click", function () {
+      confirmingId = null;
+      editingId = dish.id;
+      renderMenu(latestDishes);
+      var editor = card.ownerDocument.getElementById("edit-dish");
+      if (editor) editor.focus();
+    });
+    var deleteButton = textButton("Delete");
+    deleteButton.setAttribute("aria-label", "Delete " + (dish.dish || "dish"));
+    deleteButton.addEventListener("click", function () {
+      editingId = null;
+      confirmingId = dish.id;
+      renderMenu(latestDishes);
+    });
+    actions.appendChild(editButton);
+    actions.appendChild(deleteButton);
+    card.appendChild(actions);
     return card;
+  }
+
+  function renderEditor(dish) {
+    var editor = document.createElement("form");
+    editor.className = "dish-edit";
+    editor.noValidate = true;
+
+    var nameInputEl = lineControl("text", dish.guest_name, 80);
+    var dishInputEl = lineControl("text", dish.dish, 120);
+    dishInputEl.id = "edit-dish";
+    var categoryInputEl = document.createElement("select");
+    categoryInputEl.className = "control";
+    CATEGORIES.forEach(function (entry) {
+      var option = document.createElement("option");
+      option.value = entry[0];
+      option.textContent = entry[1];
+      if (entry[0] === dish.category) option.selected = true;
+      categoryInputEl.appendChild(option);
+    });
+    if (!categoryLabel(dish.category)) {
+      var extra = document.createElement("option");
+      extra.value = dish.category || "";
+      extra.textContent = dish.category || "Other";
+      extra.selected = true;
+      categoryInputEl.appendChild(extra);
+    }
+    var notesInputEl = document.createElement("textarea");
+    notesInputEl.className = "control";
+    notesInputEl.maxLength = 280;
+    notesInputEl.rows = 2;
+    notesInputEl.value = dish.notes || "";
+
+    var status = document.createElement("p");
+    status.className = "form-status";
+    status.setAttribute("role", "status");
+
+    var actions = document.createElement("div");
+    actions.className = "dish-actions";
+    var saveButton = textButton("Save");
+    saveButton.type = "submit";
+    var cancelButton = textButton("Cancel");
+    actions.appendChild(saveButton);
+    actions.appendChild(cancelButton);
+
+    editor.appendChild(labeledControl("Name", nameInputEl));
+    editor.appendChild(labeledControl("Dish", dishInputEl));
+    editor.appendChild(labeledControl("Category", categoryInputEl));
+    editor.appendChild(labeledControl("Notes", notesInputEl));
+    editor.appendChild(actions);
+    editor.appendChild(status);
+
+    editor.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var fields = {
+        guest_name: clean(nameInputEl.value),
+        dish: clean(dishInputEl.value),
+        category: categoryInputEl.value,
+        notes: clean(notesInputEl.value),
+      };
+      var problem = validate(fields, {
+        guest_name: nameInputEl,
+        dish: dishInputEl,
+        category: categoryInputEl,
+        notes: notesInputEl,
+      });
+      if (problem) {
+        setStatusEl(status, problem.message, "err");
+        problem.field.setAttribute("aria-invalid", "true");
+        problem.field.focus();
+        return;
+      }
+      saveButton.disabled = true;
+      cancelButton.disabled = true;
+      setStatusEl(status, "Saving…");
+      updateDish(dish.id, fields)
+        .then(function () {
+          editingId = null;
+          setFormStatus("Updated " + fields.dish + ".", "ok");
+          return loadMenu({ quiet: true, silent: true, highlightId: dish.id });
+        })
+        .catch(function (error) {
+          saveButton.disabled = false;
+          cancelButton.disabled = false;
+          if (isSessionError(error)) {
+            lock("That sign-in expired. Enter the family password again.");
+            return;
+          }
+          console.error(error);
+          setStatusEl(status, describe(error, "save"), "err");
+        });
+    });
+    cancelButton.addEventListener("click", function () {
+      editingId = null;
+      renderMenu(latestDishes);
+    });
+    return editor;
+  }
+
+  function renderDeleteConfirm(dish) {
+    var wrap = document.createElement("div");
+    var prompt = document.createElement("p");
+    prompt.className = "confirm";
+    prompt.textContent = "Remove " + (dish.dish || "this dish") + "?";
+    var actions = document.createElement("div");
+    actions.className = "dish-actions";
+    var removeButton = textButton("Remove");
+    var keepButton = textButton("Keep");
+    var status = document.createElement("p");
+    status.className = "form-status";
+    status.setAttribute("role", "status");
+    removeButton.addEventListener("click", function () {
+      removeButton.disabled = true;
+      keepButton.disabled = true;
+      setStatusEl(status, "Removing…");
+      deleteDish(dish.id)
+        .then(function () {
+          confirmingId = null;
+          setFormStatus("Removed " + (dish.dish || "that dish") + ".", "ok");
+          return loadMenu({ quiet: true, silent: true });
+        })
+        .catch(function (error) {
+          removeButton.disabled = false;
+          keepButton.disabled = false;
+          if (isSessionError(error)) {
+            lock("That sign-in expired. Enter the family password again.");
+            return;
+          }
+          console.error(error);
+          setStatusEl(status, describe(error, "delete"), "err");
+        });
+    });
+    keepButton.addEventListener("click", function () {
+      confirmingId = null;
+      renderMenu(latestDishes);
+    });
+    actions.appendChild(removeButton);
+    actions.appendChild(keepButton);
+    wrap.appendChild(prompt);
+    wrap.appendChild(actions);
+    wrap.appendChild(status);
+    return wrap;
+  }
+
+  function labeledControl(labelText, control) {
+    var wrap = document.createElement("div");
+    wrap.className = "field";
+    var label = document.createElement("label");
+    if (!control.id) control.id = "edit-" + labelText.toLowerCase();
+    label.htmlFor = control.id;
+    label.textContent = labelText;
+    if (!control.className) control.className = "control";
+    wrap.appendChild(label);
+    wrap.appendChild(control);
+    return wrap;
+  }
+
+  function lineControl(type, value, maxLength) {
+    var input = document.createElement("input");
+    input.className = "control";
+    input.type = type;
+    input.maxLength = maxLength;
+    input.value = value || "";
+    return input;
+  }
+
+  function textButton(label) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "refresh";
+    button.textContent = label;
+    return button;
+  }
+
+  function setStatusEl(el, message, kind) {
+    el.textContent = message;
+    el.classList.toggle("ok", kind === "ok");
+    el.classList.toggle("err", kind === "err");
   }
 
   function summaryText(dishes) {

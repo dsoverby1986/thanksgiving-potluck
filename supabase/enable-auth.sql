@@ -18,5 +18,21 @@ create policy "Family can add a dish"
   to authenticated
   with check (true);
 
-grant select, insert on table public.dishes to authenticated;
+drop policy if exists "Family can update a dish" on public.dishes;
+drop policy if exists "Family can delete a dish" on public.dishes;
+
+create policy "Family can update a dish"
+  on public.dishes
+  for update
+  to authenticated
+  using (true)
+  with check (true);
+
+create policy "Family can delete a dish"
+  on public.dishes
+  for delete
+  to authenticated
+  using (true);
+
+grant select, insert, update, delete on table public.dishes to authenticated;
 revoke select, insert, update, delete on table public.dishes from anon;

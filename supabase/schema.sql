@@ -1,6 +1,5 @@
 -- Run once in the Supabase SQL Editor for a new project.
--- Reading and adding dishes requires the shared family sign-in.
--- Visitors cannot update or delete rows. Remove a mistake from the Table Editor.
+-- Reading, adding, editing, and deleting dishes requires the shared family sign-in.
 -- If this project already has the old open policies, run supabase/enable-auth.sql instead.
 
 create table public.dishes (
@@ -41,6 +40,19 @@ create policy "Family can add a dish"
   to authenticated
   with check (true);
 
+create policy "Family can update a dish"
+  on public.dishes
+  for update
+  to authenticated
+  using (true)
+  with check (true);
+
+create policy "Family can delete a dish"
+  on public.dishes
+  for delete
+  to authenticated
+  using (true);
+
 grant usage on schema public to anon, authenticated;
-grant select, insert on table public.dishes to authenticated;
+grant select, insert, update, delete on table public.dishes to authenticated;
 revoke select, insert, update, delete on table public.dishes from anon;
