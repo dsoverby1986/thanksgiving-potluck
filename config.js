@@ -6,4 +6,6 @@ window.POTLUCK_CONFIG = {
   eventTitle: "Thanksgiving",
   eventDate: "Thursday, November 26, 2026",
   eventNote: "Add what you plan to bring.",
+  // Email of the one Supabase Auth user. Never put the password in this file.
+  familyEmail: "dsoverby1986@gmail.com",
 };

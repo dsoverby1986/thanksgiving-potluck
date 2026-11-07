@@ -26,7 +26,24 @@
         Saving isn't connected yet. Add your Supabase project URL and publishable key in
         <code>config.js</code>.
       </p>
-      <div class="layout">
+      <form id="login-form" class="login" hidden novalidate>
+        <h2>Open the menu</h2>
+        <p class="login-note">Everyone in the family uses the same password.</p>
+        <div class="field">
+          <label for="family-password">Family password</label>
+          <input
+            id="family-password"
+            class="control"
+            type="password"
+            autocomplete="current-password"
+            required
+            aria-required="true"
+          />
+        </div>
+        <button id="login-submit" class="submit" type="submit">Open the menu</button>
+        <p id="login-status" class="form-status" role="status" aria-live="polite"></p>
+      </form>
+      <div id="app" class="layout" hidden>
         <form id="dish-form" class="editor" novalidate>
           <h2>Add a dish</h2>
           <div class="field">
@@ -84,7 +101,10 @@
         <section id="menu-section" class="menu-section" aria-labelledby="menu-heading">
           <div class="menu-head">
             <h2 id="menu-heading">The menu</h2>
-            <button id="refresh" class="refresh" type="button">Refresh</button>
+            <div class="menu-actions">
+              <button id="sign-out" class="refresh" type="button">Sign out</button>
+              <button id="refresh" class="refresh" type="button">Refresh</button>
+            </div>
           </div>
           <p id="summary" class="summary" hidden></p>
           <p id="menu-note" class="menu-note" role="status" aria-live="polite"></p>

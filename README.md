@@ -12,7 +12,16 @@ GitHub Pages hosts the page. [Supabase](https://supabase.com) stores the dishes.
 4. Paste both into `config.js`. Leave the secret key where it is. A secret key in this file would give every visitor full access to the database.
 5. Change the title, date, and note in `config.js` if you want different wording.
 
-`config.js` is meant to be committed. The publishable key is public by design. Row policies in `supabase/schema.sql` are what limit visitors to reading the list and adding a dish.
+`config.js` is meant to be committed. The publishable key is public by design. The family password is not. Row policies are what keep visitors from reading or adding dishes until they sign in.
+
+## Add a family password
+
+1. In Supabase, open **Authentication → Users → Add user**. Enter an email and the password you will share with the family. Turn on **Auto Confirm**.
+2. Open **Authentication → Sign In / Providers → Email** and turn off new sign-ups, so strangers cannot register their own user.
+3. Put that email in `familyEmail` in `config.js`. Leave the password out of the file.
+4. If you already ran `supabase/schema.sql` while the menu was open to everyone, run `supabase/enable-auth.sql` in the SQL Editor.
+
+The page asks for the password and remembers it on that device until someone chooses **Sign out**. Signing in uses one shared user. It does not keep a separate account for each person.
 
 ## Publish on GitHub Pages
 
@@ -21,7 +30,7 @@ GitHub Pages hosts the page. [Supabase](https://supabase.com) stores the dishes.
 3. Under **Build and deployment**, choose **Deploy from a branch**.
 4. Choose the default branch and the `/ (root)` folder, then save.
 
-The address will look like `https://<user>.github.io/<repository>/`. The first deploy can take a minute. Anyone with that link can add a dish and see the menu. The page asks search engines not to index it.
+The address will look like `https://<user>.github.io/<repository>/`. The first deploy can take a minute. Anyone with the link sees the sign-in screen. The menu itself opens after the family password. The page asks search engines not to index it.
 
 ## Preview on your computer
 

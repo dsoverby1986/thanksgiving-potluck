@@ -200,11 +200,25 @@ textarea.control {
   margin-top: 28px;
 }
 
+.login {
+  max-width: 420px;
+}
+
+.login-note {
+  margin: 0 0 16px;
+  color: #5c5148;
+}
+
 .menu-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
+}
+
+.menu-actions {
+  display: flex;
+  gap: 16px;
 }
 
 .menu-head h2 {
@@ -343,6 +357,7 @@ time {
   }
 
   .editor,
+  .login,
   .banner,
   .refresh,
   .form-status,

@@ -30,9 +30,21 @@
   var dateLine = document.getElementById("event-date");
   var noteLine = document.getElementById("event-note");
 
+  var loginForm = document.getElementById("login-form");
+  var loginPassword = document.getElementById("family-password");
+  var loginSubmit = document.getElementById("login-submit");
+  var loginStatus = document.getElementById("login-status");
+  var app = document.getElementById("app");
+  var signOutButton = document.getElementById("sign-out");
+
   var settings = readSettings();
   var saving = false;
+  var signingIn = false;
   var loadToken = 0;
+  var currentSession = null;
+  var refreshPromise = null;
+  var pollingStarted = false;
+  var SESSION_KEY = "potluck-session";
 
   applyCopy(settings.config);
   fillCategories();
@@ -43,12 +55,17 @@
     setFormStatus("");
     clearInvalid();
   });
+  loginForm.addEventListener("submit", onLogin);
+  loginForm.addEventListener("input", function () {
+    if (!signingIn) setLoginStatus("");
+  });
   refreshButton.addEventListener("click", function () {
-    if (!settings.configured) {
-      showMenuMessage("Connect Supabase in config.js, then the menu will show here.");
-      return;
-    }
+    if (!currentSession) return;
     loadMenu({ quiet: menu.dataset.loaded === "true" });
+  });
+  signOutButton.addEventListener("click", function () {
+    lock("");
+    loginPassword.focus();
   });
 
   if (!settings.configured) {
@@ -57,13 +74,26 @@
   }
 
   banner.hidden = true;
-  loadMenu();
-  setInterval(function () {
-    if (!document.hidden) loadMenu({ quiet: true, silent: true });
-  }, 20000);
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) loadMenu({ quiet: true, silent: true });
-  });
+  if (!settings.familyEmail) {
+    banner.hidden = false;
+    banner.textContent =
+      "Add familyEmail in config.js. Create that user under Supabase Authentication, then reload this page.";
+    return;
+  }
+
+  if (readSession()) {
+    showApp();
+    showMenuMessage("Opening the menu…");
+    ensureSession()
+      .then(function () {
+        loadMenu();
+      })
+      .catch(function () {
+        lock("That sign-in expired. Enter the family password again.");
+      });
+  } else {
+    lock("");
+  }
 
   function readSettings() {
     var config = window.POTLUCK_CONFIG || {};
@@ -79,10 +109,13 @@
         "config.js has a secret key. Replace it with the publishable key, then reload this page.";
       return { config: config, supabaseUrl: "", supabaseKey: "", configured: false };
     }
+    var familyEmail = String(config.familyEmail || "").trim().toLowerCase();
+    if (familyEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(familyEmail)) familyEmail = "";
     return {
       config: config,
       supabaseUrl: supabaseUrl,
       supabaseKey: supabaseKey,
+      familyEmail: familyEmail,
       configured: Boolean(supabaseUrl && supabaseKey.length >= 20),
     };
   }
@@ -187,10 +220,14 @@
         return loadMenu({ quiet: true, silent: true, highlightId: row && row.id });
       })
       .catch(function (error) {
-        console.error(error);
-        setFormStatus(describe(error, "save"), "err");
         saving = false;
         setBusy(false);
+        if (isSessionError(error)) {
+          lock("That sign-in expired. Enter the family password again.");
+          return;
+        }
+        console.error(error);
+        setFormStatus(describe(error, "save"), "err");
       });
   }
 
@@ -239,6 +276,10 @@
       })
       .catch(function (error) {
         if (token !== loadToken) return;
+        if (isSessionError(error)) {
+          lock("That sign-in expired. Enter the family password again.");
+          return;
+        }
         console.error(error);
         var message = describe(error, "load");
         if (opts.quiet && menu.dataset.loaded === "true") setNote(menuNote, message);
@@ -247,28 +288,32 @@
   }
 
   function fetchDishes() {
-    return fetch(apiUrl("dishes?select=id,guest_name,dish,category,notes,created_at&order=created_at.asc"), {
-      headers: apiHeaders(),
-    }).then(function (response) {
-      if (!response.ok) return rejectResponse(response);
-      return response.json().then(function (data) {
-        if (!Array.isArray(data)) throw new Error("Unexpected response");
-        return data;
+    return ensureSession().then(function () {
+      return fetch(apiUrl("dishes?select=id,guest_name,dish,category,notes,created_at&order=created_at.asc"), {
+        headers: apiHeaders(),
+      }).then(function (response) {
+        if (!response.ok) return rejectResponse(response);
+        return response.json().then(function (data) {
+          if (!Array.isArray(data)) throw new Error("Unexpected response");
+          return data;
+        });
       });
     });
   }
 
   function createDish(fields) {
-    return fetch(apiUrl("dishes"), {
-      method: "POST",
-      headers: apiHeaders({
-        "Content-Type": "application/json",
-        Prefer: "return=representation",
-      }),
-      body: JSON.stringify(fields),
-    }).then(function (response) {
-      if (!response.ok) return rejectResponse(response);
-      return response.json();
+    return ensureSession().then(function () {
+      return fetch(apiUrl("dishes"), {
+        method: "POST",
+        headers: apiHeaders({
+          "Content-Type": "application/json",
+          Prefer: "return=representation",
+        }),
+        body: JSON.stringify(fields),
+      }).then(function (response) {
+        if (!response.ok) return rejectResponse(response);
+        return response.json();
+      });
     });
   }
 
@@ -299,14 +344,187 @@
     var headers = {
       apikey: settings.supabaseKey,
       Accept: "application/json",
+      Authorization: "Bearer " + (currentSession ? currentSession.access_token : ""),
     };
-    if (settings.supabaseKey.indexOf("eyJ") === 0) {
-      headers.Authorization = "Bearer " + settings.supabaseKey;
-    }
     Object.keys(extra || {}).forEach(function (key) {
       headers[key] = extra[key];
     });
     return headers;
+  }
+
+  function onLogin(event) {
+    event.preventDefault();
+    if (signingIn) return;
+    var password = loginPassword.value;
+    if (!password) {
+      setLoginStatus("Enter the family password.", "err");
+      loginPassword.focus();
+      return;
+    }
+
+    signingIn = true;
+    loginSubmit.disabled = true;
+    loginPassword.disabled = true;
+    setLoginStatus("Checking…");
+
+    authRequest("token?grant_type=password", {
+      email: settings.familyEmail,
+      password: password,
+    })
+      .then(function (auth) {
+        writeSession(auth);
+        loginPassword.value = "";
+        showApp();
+        return loadMenu();
+      })
+      .catch(function (error) {
+        console.error(error);
+        setLoginStatus(describeLogin(error), "err");
+        loginPassword.focus();
+      })
+      .then(function () {
+        signingIn = false;
+        loginSubmit.disabled = false;
+        loginPassword.disabled = false;
+      });
+  }
+
+  function showApp() {
+    banner.hidden = true;
+    loginForm.hidden = true;
+    app.hidden = false;
+    startPolling();
+  }
+
+  function lock(message) {
+    clearSession();
+    app.hidden = true;
+    loginForm.hidden = false;
+    setLoginStatus(message || "", message ? "err" : "");
+    summary.hidden = true;
+    summary.textContent = "";
+    menu.replaceChildren();
+    delete menu.dataset.loaded;
+  }
+
+  function startPolling() {
+    if (pollingStarted) return;
+    pollingStarted = true;
+    setInterval(function () {
+      if (!document.hidden && currentSession) loadMenu({ quiet: true, silent: true });
+    }, 20000);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && currentSession) loadMenu({ quiet: true, silent: true });
+    });
+  }
+
+  function ensureSession() {
+    var session = currentSession || readSession();
+    if (!session) return Promise.reject(sessionError());
+    currentSession = session;
+    if (session.expires_at - Date.now() > 60000) return Promise.resolve(session);
+    if (!refreshPromise) {
+      refreshPromise = authRequest("token?grant_type=refresh_token", {
+        refresh_token: session.refresh_token,
+      })
+        .then(writeSession)
+        .catch(function (error) {
+          clearSession();
+          throw error;
+        });
+      refreshPromise.then(clearRefreshPromise, clearRefreshPromise);
+    }
+    return refreshPromise;
+  }
+
+  function clearRefreshPromise() {
+    refreshPromise = null;
+  }
+
+  function authRequest(query, body) {
+    return fetch(settings.supabaseUrl + "/auth/v1/" + query, {
+      method: "POST",
+      headers: {
+        apikey: settings.supabaseKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }).then(function (response) {
+      return response
+        .json()
+        .catch(function () {
+          return {};
+        })
+        .then(function (payload) {
+          if (response.ok && payload.access_token) return payload;
+          var error = new Error(
+            payload.error_description || payload.msg || payload.message || payload.error || "Sign-in failed"
+          );
+          error.status = response.status;
+          throw error;
+        });
+    });
+  }
+
+  function readSession() {
+    try {
+      var raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      var session = JSON.parse(raw);
+      if (!session.access_token || !session.refresh_token || !session.expires_at) return null;
+      return session;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function writeSession(auth) {
+    var session = {
+      access_token: auth.access_token,
+      refresh_token: auth.refresh_token,
+      expires_at: Date.now() + Number(auth.expires_in || 3600) * 1000,
+    };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    currentSession = session;
+    return session;
+  }
+
+  function clearSession() {
+    currentSession = null;
+    try {
+      localStorage.removeItem(SESSION_KEY);
+    } catch (error) {
+      return;
+    }
+  }
+
+  function sessionError() {
+    var error = new Error("Sign-in required");
+    error.status = 401;
+    return error;
+  }
+
+  function isSessionError(error) {
+    var raw = (error && error.message) || "";
+    if (/invalid api key|permission denied|42501|row-level security/i.test(raw)) return false;
+    return Boolean(error && (error.status === 401 || /jwt|JWSError/i.test(raw)));
+  }
+
+  function describeLogin(error) {
+    var raw = (error && error.message) || "";
+    if (error && error.status === 429) return "Too many tries. Wait a minute and try again.";
+    if (/confirm/i.test(raw)) {
+      return "That user is not confirmed yet. In Supabase, create the user with Auto Confirm turned on.";
+    }
+    if (error && (error.status === 400 || error.status === 401)) return "That password didn't work.";
+    if (error && error.name === "TypeError") return "Couldn't reach Supabase. Check the project URL and your connection.";
+    return "Couldn't sign in.";
+  }
+
+  function setLoginStatus(message, kind) {
+    loginStatus.textContent = message;
+    loginStatus.classList.toggle("ok", kind === "ok");
+    loginStatus.classList.toggle("err", kind === "err");
   }
 
   function describe(error, action) {
@@ -320,7 +538,7 @@
     } else if (status === 404 || /does not exist|schema cache|PGRST205/i.test(raw)) {
       message = "The dishes table is missing. Run supabase/schema.sql in the Supabase SQL editor.";
     } else if (/row-level security|permission denied|42501/i.test(raw)) {
-      message = "Supabase refused the request. Run supabase/schema.sql so the read and add policies exist.";
+      message = "Supabase refused the request. Run supabase/enable-auth.sql in the SQL editor.";
     } else if (/check constraint|dishes_/i.test(raw)) {
       message = "That entry didn't fit the menu limits. Shorten it and try again.";
     } else if (action === "save") {
